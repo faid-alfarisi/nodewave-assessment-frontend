@@ -19,6 +19,9 @@ import {
   Lock,
   Search,
   RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  ArrowUpDown,
 } from 'lucide-react';
 
 const COLUMNS = [
@@ -35,8 +38,23 @@ export default function TaskBoardPage() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [conflictData, setConflictData] = useState<any | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+
+  // Filtering, Searching, Paginating, and Sorting states
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState<string>('ALL');
+  const [page, setPage] = useState<number>(1);
+  const [rows, setRows] = useState<number>(10);
+  const [sortOption, setSortOption] = useState<string>('createdAt_desc');
+
+  // Debounce search query input by 350ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setPage(1); // Reset to page 1 on new search
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => {
     initialize();
@@ -63,31 +81,51 @@ export default function TaskBoardPage() {
 
   const activeProject = projectsData?.[0];
 
+  // Parse sort option into orderKey and orderRule
+  const [orderKey, orderRule] = sortOption.split('_') as [string, 'asc' | 'desc'];
+
+  // Query tasks strictly using the @nodewave/prisma-ezfilter query contract
   const {
-    data: tasksData,
+    data: tasksResponse,
     isLoading: tasksLoading,
     isError,
     error,
     refetch: refetchTasks,
   } = useQuery({
-    queryKey: ['tasks', deptFilter],
+    queryKey: ['tasks', deptFilter, debouncedSearch, page, rows, orderKey, orderRule],
     queryFn: async () => {
-      const params: any = {};
+      const params: any = {
+        page,
+        rows,
+        orderKey,
+        orderRule,
+      };
+
+      // Contract: exact match via filters parameter
       if (deptFilter !== 'ALL') {
         params.filters = JSON.stringify({ department: deptFilter });
       }
+
+      // Contract: partial / contains match via searchFilters parameter
+      if (debouncedSearch.trim()) {
+        params.searchFilters = JSON.stringify({ title: debouncedSearch.trim() });
+      }
+
       const res = await api.get('/api/tasks', { params });
-      return res.data.data as Task[];
+      return res.data as {
+        data: Task[];
+        meta: { page: number; rows: number; total: number };
+      };
     },
     enabled: !!token,
   });
 
+  const tasksList = tasksResponse?.data || [];
+  const meta = tasksResponse?.meta || { page: 1, rows: 10, total: 0 };
+  const totalPages = Math.max(1, Math.ceil(meta.total / rows));
+
   const isClient = user?.role === 'CLIENT_GUEST';
   const isPM = user?.role === 'PRODUCT_MANAGER';
-
-  const filteredTasks = (tasksData || []).filter((task) =>
-    task.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   if (authLoading || (projectsLoading && !projectsData)) {
     return (
@@ -144,23 +182,29 @@ export default function TaskBoardPage() {
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <div className="relative flex-1">
+        {/* Query Controls: Search, Filter, Sort & PM Actions */}
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3 flex-1">
+            {/* Search Input (searchFilters contract) */}
+            <div className="relative flex-1 min-w-[200px] max-w-md">
               <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#A3A0AF]" />
               <input
                 type="text"
-                placeholder="Search tasks..."
+                placeholder="Search tasks by title..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 rounded-xl bg-[rgba(18,22,28,0.7)] border border-[rgba(80,177,210,0.15)] text-white text-xs focus:outline-none focus:border-[#50B1D2]"
               />
             </div>
 
+            {/* Department Filter (filters contract) */}
             {!isClient && (
               <select
                 value={deptFilter}
-                onChange={(e) => setDeptFilter(e.target.value)}
+                onChange={(e) => {
+                  setDeptFilter(e.target.value);
+                  setPage(1);
+                }}
                 className="px-3 py-2 rounded-xl bg-[rgba(18,22,28,0.7)] border border-[rgba(80,177,210,0.15)] text-white text-xs focus:outline-none focus:border-[#50B1D2]"
               >
                 <option value="ALL">All Departments</option>
@@ -170,6 +214,24 @@ export default function TaskBoardPage() {
                 <option value="MANAGEMENT">Management</option>
               </select>
             )}
+
+            {/* Sorting (orderKey & orderRule contract) */}
+            <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[rgba(18,22,28,0.7)] border border-[rgba(80,177,210,0.15)] text-xs text-[#A3A0AF]">
+              <ArrowUpDown className="w-3.5 h-3.5 text-[#50B1D2]" />
+              <select
+                value={sortOption}
+                onChange={(e) => {
+                  setSortOption(e.target.value);
+                  setPage(1);
+                }}
+                className="bg-transparent text-white text-xs focus:outline-none cursor-pointer"
+              >
+                <option value="createdAt_desc" className="bg-[#12161C]">Newest First</option>
+                <option value="createdAt_asc" className="bg-[#12161C]">Oldest First</option>
+                <option value="title_asc" className="bg-[#12161C]">Title (A-Z)</option>
+                <option value="title_desc" className="bg-[#12161C]">Title (Z-A)</option>
+              </select>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -179,7 +241,7 @@ export default function TaskBoardPage() {
                 refetchProjects();
               }}
               className="p-2 text-[#A3A0AF] hover:text-white rounded-xl bg-[rgba(18,22,28,0.7)] border border-[rgba(80,177,210,0.15)] hover:border-[#50B1D2]/40 transition-colors"
-              title="Refresh"
+              title="Refresh Tasks"
             >
               <RefreshCw className="w-4 h-4" />
             </button>
@@ -207,46 +269,110 @@ export default function TaskBoardPage() {
         {tasksLoading && <LoadingSpinner text="Retrieving operational tasks..." />}
 
         {!tasksLoading && !isError && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {COLUMNS.map((col) => {
-              const colTasks = filteredTasks.filter((t) => t.status === col.id);
-              const ColIcon = col.icon;
+          <>
+            {/* Kanban Columns */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {COLUMNS.map((col) => {
+                const colTasks = tasksList.filter((t) => t.status === col.id);
+                const ColIcon = col.icon;
 
-              return (
-                <div
-                  key={col.id}
-                  className="p-4 rounded-2xl bg-[rgba(12,15,20,0.6)] border border-[rgba(80,177,210,0.1)] flex flex-col min-h-[500px]"
-                >
-                  <div className="flex items-center justify-between pb-3 border-b border-[rgba(255,255,255,0.05)] mb-3">
-                    <div className="flex items-center gap-2">
-                      <ColIcon className={`w-4 h-4 ${col.color}`} />
-                      <h2 className="text-xs font-bold text-white tracking-wide">{col.title}</h2>
-                    </div>
-                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[rgba(255,255,255,0.05)] text-[#A3A0AF]">
-                      {colTasks.length}
-                    </span>
-                  </div>
-
-                  <div className="space-y-3 flex-1 overflow-y-auto">
-                    {colTasks.length > 0 ? (
-                      colTasks.map((task) => (
-                        <TaskCard
-                          key={task.id}
-                          task={task}
-                          currentUser={user}
-                          onClick={() => setSelectedTask(task)}
-                        />
-                      ))
-                    ) : (
-                      <div className="h-40 flex items-center justify-center text-center text-xs text-[#A3A0AF]/60 italic border border-dashed border-[rgba(255,255,255,0.05)] rounded-xl">
-                        No tasks in {col.title}
+                return (
+                  <div
+                    key={col.id}
+                    className="p-4 rounded-2xl bg-[rgba(12,15,20,0.6)] border border-[rgba(80,177,210,0.1)] flex flex-col min-h-[460px]"
+                  >
+                    <div className="flex items-center justify-between pb-3 border-b border-[rgba(255,255,255,0.05)] mb-3">
+                      <div className="flex items-center gap-2">
+                        <ColIcon className={`w-4 h-4 ${col.color}`} />
+                        <h2 className="text-xs font-bold text-white tracking-wide">{col.title}</h2>
                       </div>
-                    )}
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[rgba(255,255,255,0.05)] text-[#A3A0AF]">
+                        {colTasks.length}
+                      </span>
+                    </div>
+
+                    <div className="space-y-3 flex-1 overflow-y-auto">
+                      {colTasks.length > 0 ? (
+                        colTasks.map((task) => (
+                          <TaskCard
+                            key={task.id}
+                            task={task}
+                            currentUser={user}
+                            onClick={() => setSelectedTask(task)}
+                          />
+                        ))
+                      ) : (
+                        <div className="h-40 flex items-center justify-center text-center text-xs text-[#A3A0AF]/60 italic border border-dashed border-[rgba(255,255,255,0.05)] rounded-xl">
+                          No tasks in {col.title}
+                        </div>
+                      )}
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+
+            {/* Pagination Controls Bar */}
+            <div className="p-4 rounded-2xl bg-[rgba(18,22,28,0.7)] border border-[rgba(80,177,210,0.15)] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#A3A0AF]">
+              {/* Total & Current Range */}
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing{' '}
+                  <strong className="text-white">
+                    {meta.total === 0 ? 0 : (page - 1) * rows + 1}
+                  </strong>{' '}
+                  to{' '}
+                  <strong className="text-white">
+                    {Math.min(page * rows, meta.total)}
+                  </strong>{' '}
+                  of <strong className="text-[#50B1D2]">{meta.total}</strong> total tasks
+                </span>
+              </div>
+
+              {/* Page Navigator */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                  disabled={page <= 1}
+                  className="px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.05)] hover:bg-[rgba(80,177,210,0.2)] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1 border border-white/5"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Previous</span>
+                </button>
+
+                <div className="px-3 py-1.5 rounded-lg bg-black/40 border border-white/10 font-mono text-white text-[11px]">
+                  Page {page} of {totalPages}
                 </div>
-              );
-            })}
-          </div>
+
+                <button
+                  onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                  disabled={page >= totalPages}
+                  className="px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.05)] hover:bg-[rgba(80,177,210,0.2)] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1 border border-white/5"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Rows Per Page Selector */}
+              <div className="flex items-center gap-2">
+                <span>Rows per page:</span>
+                <select
+                  value={rows}
+                  onChange={(e) => {
+                    setRows(Number(e.target.value));
+                    setPage(1);
+                  }}
+                  className="px-2 py-1 rounded-lg bg-black/50 border border-[rgba(80,177,210,0.2)] text-white text-xs focus:outline-none focus:border-[#50B1D2] cursor-pointer"
+                >
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                </select>
+              </div>
+            </div>
+          </>
         )}
       </main>
 
@@ -284,7 +410,7 @@ export default function TaskBoardPage() {
             refetchProjects();
           }}
           projectId={activeProject.id}
-          existingTasks={tasksData || []}
+          existingTasks={tasksList}
         />
       )}
     </div>
